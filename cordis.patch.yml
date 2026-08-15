@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-whale-companion
+      name: '@dsh-external/dsh-whale-companion'

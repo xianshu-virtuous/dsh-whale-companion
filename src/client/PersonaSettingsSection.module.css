@@ -1,0 +1,125 @@
+.section {
+  display: grid;
+  gap: 16px;
+  width: min(760px, 100%);
+  padding: 20px;
+  border: 1px solid var(--dsw-alias-border-normal);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.heading h2,
+.heading p {
+  margin: 0;
+}
+
+.heading h2 {
+  color: var(--dsw-alias-label-primary);
+  font-size: 18px;
+  line-height: 26px;
+}
+
+.heading p {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.crest {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  border-radius: 50%;
+  background: var(--dsw-alias-brand-primary);
+  mask: var(--maid-bow-art) center / contain no-repeat;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.field small {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
+}
+
+.field textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 320px;
+  resize: vertical;
+  border: 1px solid var(--dsw-alias-border-normal);
+  border-radius: 6px;
+  padding: 12px 14px;
+  background: var(--dsw-alias-bg-layer-2);
+  color: var(--dsw-alias-label-primary);
+  font: 13px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.field textarea:focus {
+  border-color: var(--dsw-alias-brand-primary);
+  outline: 2px solid color-mix(in srgb, var(--dsw-alias-brand-primary) 24%, transparent);
+}
+
+.meta,
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.meta {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+}
+
+.error {
+  color: var(--dsw-alias-error-primary);
+}
+
+.actions {
+  justify-content: flex-end;
+}
+
+.restartText {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  line-height: 1.6;
+}
+
+.dialog {
+  max-width: 520px;
+}
+
+:global(body[data-dsh-maid-atelier]) .section {
+  border-color: color-mix(in srgb, #d7bd76 58%, var(--dsw-alias-border-normal));
+  background-image:
+    linear-gradient(var(--dsw-alias-bg-layer-1), var(--dsw-alias-bg-layer-1)),
+    var(--maid-settings-frame-art);
+  background-position: center, center;
+  background-size: auto, 100% 100%;
+  background-repeat: no-repeat;
+}
+
+@media (max-width: 640px) {
+  .section {
+    padding: 14px;
+  }
+
+  .field textarea {
+    min-height: 240px;
+  }
+}
