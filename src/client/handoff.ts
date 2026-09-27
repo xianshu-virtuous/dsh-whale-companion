@@ -1,8 +1,8 @@
 import type {
   AssistantMessageNode,
-  ConversationSnapshot,
+  ConversationNode,
   UserMessageNode,
-} from '@deepseek-ai/dsh-client-runtime/client'
+} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { ContextPressureProjection } from '@deepseek-ai/dsh-token-meter/client'
 
 export const CONTINUATION_THRESHOLD_RATIO = 0.88
@@ -26,16 +26,25 @@ export function reachesContinuationThreshold(
     && used / capacity >= ratio
 }
 
-/** Render the last completed user/assistant exchange as a bounded fresh-session prompt. */
+/**
+ * Render the last completed user/assistant exchange as a bounded fresh-session prompt.
+ *
+ * DSH 0.1.5 moved conversation history out of the session snapshot: the nodes now
+ * come from the Chat conversation view (`uiConversation.binding(id).target('chat')`).
+ * Missing history is a normal condition (the view may not be mounted yet), so this
+ * returns null instead of throwing — throwing here used to run on every render and
+ * broke the whole client UI.
+ */
 export function buildContinuationPrompt(
-  snapshot: Pick<ConversationSnapshot, 'nodes'>,
+  nodes: readonly ConversationNode[] | undefined,
   maxCharacters = MAX_HANDOFF_CHARACTERS,
 ): string | null {
-  const assistantIndex = snapshot.nodes.findLastIndex((node): node is AssistantMessageNode =>
-    node.kind === 'assistant' && node.interrupted !== true)
+  if (!Array.isArray(nodes) || nodes.length === 0) return null
+  const assistantIndex = nodes.findLastIndex((node): node is AssistantMessageNode =>
+    node.kind === 'assistant' && (node as AssistantMessageNode).interrupted !== true)
   if (assistantIndex < 0) return null
-  const assistant = snapshot.nodes[assistantIndex] as AssistantMessageNode
-  const user = snapshot.nodes
+  const assistant = nodes[assistantIndex] as AssistantMessageNode
+  const user = nodes
     .slice(0, assistantIndex)
     .findLast((node): node is UserMessageNode => node.kind === 'user')
   if (user === undefined) return null

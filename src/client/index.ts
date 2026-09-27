@@ -5,6 +5,9 @@ import type {
   SessionId,
 } from '@deepseek-ai/dsh-client-runtime/client'
 import type { ContextPressureProjection } from '@deepseek-ai/dsh-token-meter/client'
+import type { ConversationNode, UiConversation } from '@deepseek-ai/dsh-client-ui-conversation/client'
+// Register the `chat` conversation view target with the snapshot map used below.
+import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { PersonaSettingsSection } from './PersonaSettingsSection.tsx'
 import {
@@ -13,15 +16,19 @@ import {
 } from './handoff.ts'
 
 export const name = 'dsh-whale-companion-client'
-export const inject = ['sessions', 'workspaces', 'slots']
+export const inject = ['sessions', 'workspaces', 'slots', 'uiConversation']
 
 const STORAGE_PREFIX = 'dsh.whale-companion.continued.v1.'
+/** Conversation view target that owns the rendered transcript. */
+const CHAT_TARGET = 'chat'
 
 /** Watch the selected Web session and continue a near-limit completed turn in a fresh task. */
 export function apply(ctx: ClientContext): void {
   // Host and Web declarations share one build, so pin these merged services to their client contracts.
   const sessions = ctx.sessions as unknown as ISessions
   const workspaces = ctx.workspaces as unknown as IWorkspaces
+  // DSH 0.1.5 exposes conversation history through the uiConversation service.
+  const conversations = (ctx as unknown as { uiConversation: UiConversation }).uiConversation
 
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
@@ -34,6 +41,7 @@ export function apply(ctx: ClientContext): void {
   let selected: SessionId | undefined
   let disposeSession = (): void => {}
   let disposePressure = (): void => {}
+  let disposeChat = (): void => {}
   let evaluating = false
   let queued = false
   let disposed = false
@@ -55,14 +63,23 @@ export function apply(ctx: ClientContext): void {
     }
     disposeSession()
     disposePressure()
+    disposeChat()
     disposeSession = () => {}
     disposePressure = () => {}
+    disposeChat = () => {}
     selected = next
     if (next !== undefined) {
       const binding = sessions.binding(next)
       if (binding !== undefined) {
         disposeSession = binding.session.subscribe(schedule)
         disposePressure = binding.session.projections.faceOf('contextPressure').subscribe(schedule)
+      }
+      // Subscribing activates the Chat view target and re-evaluates whenever the
+      // transcript changes, which is what the handoff prompt is built from.
+      try {
+        disposeChat = conversations.binding(next).target(CHAT_TARGET).subscribe(schedule)
+      } catch (error: unknown) {
+        ctx.logger.warn(`whale-companion: chat view unavailable for automatic continuation: ${String(error)}`)
       }
     }
     schedule()
@@ -85,10 +102,14 @@ export function apply(ctx: ClientContext): void {
       if (wasPersisted(sourceId)) completed.add(sourceId)
       return
     }
-    const prompt = buildContinuationPrompt(snapshot)
+    const prompt = buildContinuationPrompt(readTranscript(conversations, sourceId, ctx))
     if (prompt === null) return
+    // The session list and the workspace list brand their SessionId through two
+    // peer-varied copies of the `dsh-session` types, so the two nominally distinct
+    // brands carry the same runtime id; compare the ids by value.
+    const sourceKey = String(sourceId)
     const workspace = workspaces.list.getSnapshot().items
-      .find(candidate => candidate.sessionIds.includes(sourceId))
+      .find(candidate => candidate.sessionIds.some(sessionId => String(sessionId) === sourceKey))
     if (workspace === undefined) {
       ctx.logger.warn(`whale-companion: session "${sourceId}" is not attached to a workspace; automatic continuation skipped`)
       return
@@ -121,7 +142,27 @@ export function apply(ctx: ClientContext): void {
     disposeList()
     disposeSession()
     disposePressure()
+    disposeChat()
   }, 'whale-companion: automatic session continuation')
+}
+
+/**
+ * Read the rendered transcript for one session.
+ *
+ * DSH 0.1.5 removed `nodes` from the session snapshot; the Chat conversation view
+ * owns it now. A missing view is a normal transient state, so this stays defensive.
+ */
+function readTranscript(
+  conversations: UiConversation,
+  sessionId: SessionId,
+  ctx: ClientContext,
+): readonly ConversationNode[] | undefined {
+  try {
+    return conversations.binding(sessionId).target(CHAT_TARGET).getSnapshot()?.legacy.nodes
+  } catch (error: unknown) {
+    ctx.logger.warn(`whale-companion: could not read the conversation transcript: ${String(error)}`)
+    return undefined
+  }
 }
 
 function wasPersisted(sourceId: SessionId): boolean {
