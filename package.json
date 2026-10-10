@@ -1,6 +1,6 @@
 {
   "name": "@dsh-external/dsh-whale-companion",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "Additive whale-maid persona and automatic near-limit session continuation for DeepSeek Harness",
   "repository": {

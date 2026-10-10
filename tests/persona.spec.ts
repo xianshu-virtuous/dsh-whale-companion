@@ -53,6 +53,7 @@ describe('whale maid persona', () => {
       'search_stickers',
       'send_sticker',
       'sync_stickers',
+      'sticker_tag_probe',
     ])
     expect(inject).toHaveBeenCalledWith(['webServer'], expect.any(Function))
   })

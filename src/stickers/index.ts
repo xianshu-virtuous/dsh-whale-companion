@@ -23,9 +23,9 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { existsSync, readFileSync } from 'node:fs'
 import { extname } from 'node:path'
 import { stopVisionModel } from '../see-image.ts'
-import { EMOTION_TAGS, tagImageViaLlm, tagImageViaOllama, type TagRoute } from './tagging.ts'
+import { EMOTION_TAGS, tagImageViaLlm, tagImageViaOllama, type StickerTagOutcome, type TagRoute } from './tagging.ts'
 import {
-  findSticker, loadIndex, reconcile, saveIndex, shortId, stickerPath,
+  findSticker, listImageFiles, loadIndex, reconcile, saveIndex, shortId, stickerPath,
   type StickerEntry, type StickerIndex,
 } from './store.ts'
 
@@ -94,27 +94,42 @@ export async function syncStickers(
       const abs = stickerPath(item.file)
 
       // 主路径：DSH 路由的多模态模型（与对话同款，不占本机显存）
-      let result = route === undefined ? null : await tagImageViaLlm(ctx, abs, route)
+      let outcome: StickerTagOutcome = route === undefined
+        ? { result: null, failure: 'llm-unreachable' }
+        : await tagImageViaLlm(ctx, abs, route)
       // 兜底：本机 Ollama（离线免费，但会占 6-7GB 显存）
-      if (result === null) {
+      if (outcome.result === null) {
         usedFallback = true
-        result = await tagImageViaOllama(abs)
+        outcome = await tagImageViaOllama(abs)
       }
 
-      if (result === null || !result.keep) {
+      // 标注失败与「模型判定不值得收藏」必须分开记录：
+      // 2026-10-11 就是因为两者都被静默跳过，48 张全失败却查不出原因。
+      if (outcome.result === null) {
         skipped += 1
+        const why = outcome.detail !== undefined
+          ? `${outcome.failure ?? 'unknown'}：${outcome.detail}`
+          : (outcome.failure ?? 'unknown')
+        log?.(`表情包标注失败：${item.file}（${why}）`)
         continue
       }
+      if (!outcome.result.keep) {
+        skipped += 1
+        log?.(`表情包跳过：${item.file}（模型判定不值得收藏）`)
+        continue
+      }
+
+      const tagged = outcome.result
       index.entries.push({
         id: shortId(item.hash),
         file: item.file,
-        description: result.description,
-        tags: result.tags,
+        description: tagged.description,
+        tags: tagged.tags,
         addedAt: new Date().toISOString(),
       })
       await saveIndex(index)
       added += 1
-      log?.(`表情包入库：${item.file} → ${result.description}`)
+      log?.(`表情包入库：${item.file} → ${tagged.description}`)
     }
 
     return { indexed: index.entries.length, added, skipped, scanned: pending.length, usedFallback }
@@ -311,6 +326,60 @@ export function registerStickers(
       return { ...result, text }
     },
   })), 'whale-companion: sync stickers tool')
+
+  // ---- 工具：API 通路自检（诊断用，不写索引）----
+  ctx.effect(() => ctx.tools.register(defineTool({
+    name: 'sticker_tag_probe',
+    description:
+      '诊断用：对一张素材走一次「DSH 路由多模态模型」打标签流程，原样返回成败细节，不写入索引。'
+      + '排查表情包打标签走不通时使用。',
+    parameters: {
+      file: { type: 'string', description: '素材文件名（可选，默认取第一张图）。' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean', required: true },
+          text: { type: 'string', required: true },
+        },
+        additionalProperties: false,
+      },
+      render: (_args, value) => [{ type: 'text', text: value.text }],
+    },
+    presentCall: () => ({ card: 'generic', title: '表情包打标签自检' }),
+    execute: async (args) => {
+      if (route === undefined) {
+        return { ok: false, text: '没有可用的打标签路由（检查 stickerTaggingProvider / stickerTaggingModel）。' }
+      }
+      const files = listImageFiles()
+      if (files.length === 0) return { ok: false, text: '素材目录里没有图片。' }
+      const requested = typeof args?.file === 'string' ? args.file.trim() : ''
+      const target = files.includes(requested) ? requested : files[0] ?? ''
+      const outcome = await tagImageViaLlm(ctx, stickerPath(target), route)
+      if (outcome.result !== null) {
+        return {
+          ok: true,
+          text: [
+            `✅ API 通路可用（${target}）`,
+            `路由：${route.provider} / ${route.model}`,
+            `描述：${outcome.result.description}`,
+            `标签：${outcome.result.tags.join('/') || '(无)'}`,
+            `keep=${outcome.result.keep}`,
+          ].join('\n'),
+        }
+      }
+      return {
+        ok: false,
+        text: [
+          `❌ API 通路失败（${target}）`,
+          `路由：${route.provider} / ${route.model}`,
+          `原因：${outcome.failure ?? 'unknown'}`,
+          `细节：${outcome.detail ?? '(无)'}`,
+        ].join('\n'),
+      }
+    },
+  })), 'whale-companion: sticker tag probe tool')
 
   // ---- 路由：提供图片二进制 ----
   ctx.inject(['webServer'], (scope: Context) => {

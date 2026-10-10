@@ -4,7 +4,7 @@
 DeepSeek Harness 外部插件：蓝鲸娘女仆「深深」追加人格 + WebUI 自动续接；并含主人档案（L0/L1/L2 持久记忆）、peer 记忆、跨 profile 双向信箱、人格成长档案、离线识图兜底等模块。
 
 ## 权威版本
-- `package.json`：`name` = `@dsh-external/dsh-whale-companion`，`version` = `0.3.0`
+- `package.json`：`name` = `@dsh-external/dsh-whale-companion`，`version` = `0.3.1`
 - 入口：`main` = `lib/index.js`；`exports` 含 `./client`（`lib/client.js`）、`./invariant`（`lib/invariant.js`）
 - 包管理器：pnpm（`pnpm-lock.yaml`、`pnpm-workspace.yaml`）；无安装期生命周期脚本（不声明 `prepare`/`postinstall`）
 - 适配基线：DSH `0.2.0-rc.2`（客户端模块机制改由 `dsh-client-modules` + `PLATFORM_MODULES` 基线驱动；`dsh-client-runtime` 在 0.2.0 已不再分发）
