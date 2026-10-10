@@ -50,6 +50,9 @@ describe('whale maid persona', () => {
       'stop_vision_model',
       'read_whale_persona',
       'grow_persona',
+      'search_stickers',
+      'send_sticker',
+      'sync_stickers',
     ])
     expect(inject).toHaveBeenCalledWith(['webServer'], expect.any(Function))
   })

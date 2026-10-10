@@ -9,7 +9,10 @@ import type { ConversationNode, UiConversation } from '@deepseek-ai/dsh-client-u
 // Register the `chat` conversation view target with the snapshot map used below.
 import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+// Type-only: 拉取 ui-tool 的 `tool.call.toolview` slot 声明（表情卡片用）
+import type {} from '@deepseek-ai/dsh-client-ui-tool/client'
 import { PersonaSettingsSection } from './PersonaSettingsSection.tsx'
+import { StickerToolCard } from './StickerCard.tsx'
 import {
   buildContinuationPrompt,
   reachesContinuationThreshold,
@@ -36,6 +39,11 @@ export function apply(ctx: ClientContext): void {
     order: 30,
     label: '鲸鱼娘人格',
   }, PersonaSettingsSection))
+
+  // send_sticker 的工具卡片：把工具参数里的 id 渲染成素材图片
+  ctx.slots.inject('tool.call.toolview', () => ctx.slots.register(
+    { name: 'tool.call.toolview', key: 'send_sticker' }, StickerToolCard,
+  ))
 
   const completed = new Set<SessionId>()
   let selected: SessionId | undefined

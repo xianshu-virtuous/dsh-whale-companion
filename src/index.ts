@@ -13,6 +13,7 @@ import {
   sendMailboxMessage, readMailboxInbox, countUnread, type MailboxFrom,
 } from './mailbox.ts'
 import { describeImage, stopVisionModel } from './see-image.ts'
+import { registerStickers } from './stickers/index.ts'
 import { appendGrowth, GROWTH_READ_LIMIT, loadGrowth } from './persona-growth.ts'
 
 /** 从工具执行上下文解析当前会话路由的 provider/model（requestHeader 优先，agent options 兜底）。 */
@@ -679,6 +680,9 @@ export function apply(ctx: Context, config: Config = {}): void {
       },
     }), 'whale-companion: persona configuration route')
   })
+
+  // ---- 表情包模块：用户自备素材 + 视觉模型标注 + 标签检索 ----
+  registerStickers(ctx)
 }
 
 async function readJsonBody(request: AsyncIterable<Uint8Array>, maxBytes: number): Promise<unknown> {

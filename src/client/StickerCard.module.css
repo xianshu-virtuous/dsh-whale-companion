@@ -1,0 +1,12 @@
+.card {
+  margin: 0;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.image {
+  display: block;
+  max-width: 180px;
+  max-height: 180px;
+  border-radius: 10px;
+}

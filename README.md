@@ -103,6 +103,36 @@ ollama pull qwen3-vl-vision:latest
 
 模型驻留会占显存，确认不再看图时请调用 `stop_vision_model`。
 
+## 表情包（用户自备素材）
+
+把图片放进素材目录，插件用视觉模型异步打标签入库，之后 Agent 就能用 `search_stickers` / `send_sticker` 发表情了。
+
+**为什么是"用户自备"**：插件**不打包任何图片**——素材权利归你，也避开了第三方素材的分发问题。
+
+### 用法
+
+1. 把表情图（`.png` / `.jpg` / `.jpeg` / `.gif` / `.webp`）放进：
+
+   ```
+   $DSH_HOME/plugins/dsh-whale-companion/stickers/
+   ```
+
+2. 重启 `dsh web`（或让 Agent 调用 `sync_stickers`）→ 插件扫描新图、调用视觉模型生成「描述 + 情感标签」，写入 `stickers/index.json`。
+3. Agent 会先用 `search_stickers(tags, description, page)` 看候选，挑一张再 `send_sticker(id)` 发送。
+
+**打标签用的模型**：默认本机 Ollama 的 `qwen3-vl-vision:latest`（离线免费），与「离线识图」共用同一组环境变量（`OLLAMA_BASE_URL` / `OLLAMA_PORT` / `OLLAMA_VISION_MODEL`）。模型不可用或回复无法解析时该图会被跳过，不会写坏索引。
+
+### 几个约定
+
+| 行为 | 说明 |
+|---|---|
+| **id** | 图片内容的 sha256 前 16 位；同一张图重复放入只会保留一份 |
+| **素材上限** | 200 张（`MAX_STICKERS`），超出不再入库 |
+| **删除素材** | 直接从 `stickers/` 删文件，下次同步自动清理索引条目 |
+| **情感标签** | 18 个预设：开心、难过、生气、惊讶、害羞、尴尬、无语、委屈、嘲讽、疑惑、赞同、否定、兴奋、疲惫、害怕、厌恶、紧张、冷漠 |
+| **去重** | 记住最近发送的 6 张并排到候选后面，避免短时间内重复 |
+| **检索** | 不依赖向量库：标签过滤 + 把候选交给模型自己挑 |
+
 ## 自动续接
 
 续接功能读取 `dsh-token-meter` 提供的 `contextPressure` 投影。它只在以下条件全部满足时触发：
