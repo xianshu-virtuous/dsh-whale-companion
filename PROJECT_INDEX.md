@@ -25,4 +25,5 @@ DeepSeek Harness 外部插件：蓝鲸娘女仆「深深」追加人格 + WebUI 
 ## 专题文档
 - 仓库规则（自动注入）：`AGENTS.md`
 - 使用、安装与故障排查：`README.md`
+- 新用户上手（记忆三级怎么用、L0 模板、记账习惯、压缩流程）：`docs/GETTING-STARTED.md`
 - 动态上下文：`docs/context/`（尚未创建，按需建立 NOW / MAP / RUNBOOK / DECISIONS / RISKS；旧内容进 `history/`）

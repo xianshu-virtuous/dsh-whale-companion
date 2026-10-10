@@ -7,6 +7,9 @@
  * 交给文本模型。若当前模型已声明 image 输入（Claude / grok / vision 变体），
  * 调用方（index.ts 的 see_image）会改走 read_image 原生识图，不再旁路。
  *
+ * 识图的实际工作由随包分发的 `scripts/describe_image.mjs` 在子进程里完成；
+ * 也可以用环境变量 `DSH_DESCRIBE_IMAGE` 指向你自己的同契约脚本。
+ *
  * 显存契约（配合 stop_vision_model 使用）：
  *  - qwen3-vl 4.4B 加载到 GPU 约占 ~6-7GB，会与桌面应用抢显存。
  *  - 工具描述指引深深：任务仍需看图时让模型驻留（快）；确定不再看图后
@@ -15,6 +18,9 @@
  */
 
 import { execFile } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export interface DescribeImageInput {
   filePath: string
@@ -27,12 +33,17 @@ export interface DescribeImageResult {
   error?: string
 }
 
-/** describe_image 脚本的绝对路径；可用环境变量 DSH_DESCRIBE_IMAGE override。 */
+/**
+ * describe_image 脚本的绝对路径。
+ *
+ * 优先取环境变量 `DSH_DESCRIBE_IMAGE`（指向自定义实现）；否则回落到随包
+ * 分发的 `scripts/describe_image.mjs`——按本模块位置定位，构建产物在
+ * `lib/` 下，所以上一级就是包根。
+ */
 export function describeScriptPath(): string {
-  const fromEnv = process.env.DSH_DESCRIBE_IMAGE
-  if (fromEnv) return fromEnv
-  // 本机默认位置（主人 F 盘工作区）。
-  return 'F:\\dsh\\_grow\\describe_image.mjs'
+  const fromEnv = process.env.DSH_DESCRIBE_IMAGE?.trim()
+  if (fromEnv !== undefined && fromEnv !== '') return fromEnv
+  return join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'describe_image.mjs')
 }
 
 /**
@@ -42,6 +53,13 @@ export function describeScriptPath(): string {
 export function describeImage(input: DescribeImageInput, timeoutMs = 120000): Promise<DescribeImageResult> {
   const { filePath, question } = input
   const script = describeScriptPath()
+  if (!existsSync(script)) {
+    return Promise.resolve({
+      ok: false,
+      error: `未找到识图脚本：${script}。请确认插件安装完整（scripts/describe_image.mjs 随包分发），`
+        + '或用环境变量 DSH_DESCRIBE_IMAGE 指向你自己的 describe_image 脚本。',
+    })
+  }
   const args = [script, filePath]
   if (question) args.push(question)
 
@@ -62,7 +80,7 @@ export function describeImage(input: DescribeImageInput, timeoutMs = 120000): Pr
   })
 }
 
-/** 默认要卸载的视觉模型镜像名。 */
+/** 默认要卸载的视觉模型镜像名（可用 OLLAMA_VISION_MODEL 覆盖，与 describe_image.mjs 一致）。 */
 export const STOPPABLE_MODEL = 'qwen3-vl-vision:latest'
 
 export interface StopVisionResult {
@@ -75,8 +93,9 @@ export interface StopVisionResult {
  * 依赖 ollama 命令在 PATH。模型未驻留时视为已释放（ok）。
  */
 export function stopVisionModel(timeoutMs = 20000): Promise<StopVisionResult> {
+  const model = process.env.OLLAMA_VISION_MODEL?.trim() || STOPPABLE_MODEL
   return new Promise((resolve) => {
-    execFile('ollama', ['stop', STOPPABLE_MODEL], { timeout: timeoutMs }, (err, stdout, stderr) => {
+    execFile('ollama', ['stop', model], { timeout: timeoutMs }, (err, stdout, stderr) => {
       if (err) {
         const raw = String(stderr ?? '').trim()
         if (/not running|not loaded|does not exist/i.test(raw)) {
@@ -91,4 +110,3 @@ export function stopVisionModel(timeoutMs = 20000): Promise<StopVisionResult> {
     })
   })
 }
-

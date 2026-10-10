@@ -87,7 +87,21 @@ GUI 与 QQ 两个 profile 各有一个信箱，用于两个「深深」互相传
 - `see_image <file_path> [question]`：当前模型不支持图片输入时，用本机 Ollama 的 qwen3-vl 视觉模型旁路识图。
 - `stop_vision_model`：识图结束后卸载模型，释放约 6–7GB 显存。
 
-需要本机已安装 Ollama 并拉过对应视觉模型。模型驻留会占显存，确认不再看图时请调用 `stop_vision_model`。
+需要本机已安装 Ollama 并拉过对应视觉模型（默认 `qwen3-vl-vision:latest`）：
+
+```powershell
+ollama pull qwen3-vl-vision:latest
+```
+
+识图的实际工作由**随包分发**的 `scripts/describe_image.mjs` 在子进程里完成，可以用环境变量覆盖：
+
+| 变量 | 作用 |
+|---|---|
+| `DSH_DESCRIBE_IMAGE` | 指向你自己的识图脚本（同契约：`node <脚本> <图片路径> [问题]`，描述打到 stdout） |
+| `OLLAMA_VISION_MODEL` | 视觉模型名（默认 `qwen3-vl-vision:latest`）；`stop_vision_model` 也读这个变量 |
+| `OLLAMA_BASE_URL` / `OLLAMA_PORT` | Ollama 服务地址（默认 `http://127.0.0.1:11434`） |
+
+模型驻留会占显存，确认不再看图时请调用 `stop_vision_model`。
 
 ## 自动续接
 
@@ -107,14 +121,17 @@ GUI 与 QQ 两个 profile 各有一个信箱，用于两个「深深」互相传
 ## 安装
 
 ```powershell
+git clone https://github.com/xianshu-virtuous/dsh-whale-companion
+cd dsh-whale-companion
 pnpm install
 pnpm run typecheck
 pnpm test
-pnpm run build
-dsh plugin --profile web add F:\dsh\dsh-whale-companion
+dsh plugin --profile web add .
 ```
 
-然后重新启动 `dsh web`。
+然后重新启动 `dsh web`（刷新页面不算重启）。
+
+装完之后怎么把它喂成真正懂你的助手——写 L0 核心卡、日常记账、定期压缩——见 [`docs/GETTING-STARTED.md`](docs/GETTING-STARTED.md)。
 
 `lib/` 是仓库里已跟踪的构建产物，也是插件的实际入口。本包**故意不声明 `prepare` 等安装期生命周期脚本**：pnpm 10+ 会拦截依赖的构建脚本（`allowBuilds`）而让 `dsh plugin add` 失败，插件市场也会因此把它标成不可安装。所以从 git 安装时直接用仓库里的 `lib/`，改了 `src/` 之后请自己跑 `pnpm run build` 再提交。
 
