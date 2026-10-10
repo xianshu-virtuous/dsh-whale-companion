@@ -1,14 +1,25 @@
 /**
- * 表情包打标签（Tagging）：调用本机 Ollama 的视觉模型，为素材生成
- * 「一句话描述 + 情感标签」，并判断是否值得收藏。
+ * 表情包打标签（Tagging）。
  *
- * 参考 MoFox `emoji_sender`：注入角色人格 + 要求结构化 JSON 输出。
- * 默认走 Ollama（qwen3-vl），因为它离线免费且主人机器上已验证可用；
- * 环境变量与 whale 的离线识图保持一致（OLLAMA_BASE_URL / OLLAMA_PORT /
- * OLLAMA_VISION_MODEL），便于统一替换模型。
+ * **主路径走 DSH 路由的多模态模型**——也就是当前配置里支持 image 输入的那个
+ * 模型（如 `deepseek-flash`），与对话用的是同一个模型。做法是：
+ *   1. 把图片存进 attachment store，拿到 `ImageAttachmentRef`
+ *   2. 用一次性请求（`GenerateOptions.system` + 手搓 messages）调用 `ctx.llm.stream()`
+ *   3. `BlockAssembler` 把 chunk 流拼回文本，再解析 JSON
+ *
+ * 这样不占本机显存、且用的是主人已经配好的模型。**兜底**保留本机 Ollama
+ * （离线免费），仅在路由调用失败时使用。
+ *
+ * 标注格式参考 MoFox `emoji_sender`：注入角色人格 + 要求结构化 JSON 输出。
+ * @module @dsh-external/dsh-whale-companion/src/stickers/tagging
  */
 import { readFileSync } from 'node:fs'
-import { extname } from 'node:path'
+import { basename, extname } from 'node:path'
+import type { Context } from '@deepseek-ai/cordis'
+import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
+import type {} from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, RequestMessage } from '@deepseek-ai/dsh-llm'
+import { BlockAssembler } from '@deepseek-ai/dsh-llm'
 
 /** 情感标签预设集（对齐 MoFox emoji_sender 的 EMOTION_TAG_PRESET）。 */
 export const EMOTION_TAGS = [
@@ -23,7 +34,13 @@ export interface StickerTagResult {
   tags: string[]
 }
 
-const MIME: Record<string, string> = {
+/** 打标签用的模型路由。 */
+export interface TagRoute {
+  provider: string
+  model: string
+}
+
+const MIME_BY_EXT: Record<string, ImageMediaType> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
@@ -31,19 +48,7 @@ const MIME: Record<string, string> = {
   '.webp': 'image/webp',
 }
 
-function ollamaBase(): string {
-  const explicit = process.env.OLLAMA_BASE_URL?.trim()
-  if (explicit !== undefined && explicit !== '') return explicit.replace(/\/+$/, '')
-  const port = process.env.OLLAMA_PORT?.trim() || '11434'
-  return `http://127.0.0.1:${port}`
-}
-
-function visionModel(): string {
-  const model = process.env.OLLAMA_VISION_MODEL?.trim()
-  return model !== undefined && model !== '' ? model : 'qwen3-vl-vision:latest'
-}
-
-/** 给视觉模型的标注指令；尽量短，减少小模型的格式漂移。 */
+/** 给模型的标注指令；尽量短，减少格式漂移。 */
 export function buildTagPrompt(): string {
   return [
     '你在为一只「鲸鱼娘女仆」角色整理表情包素材库。',
@@ -88,12 +93,84 @@ export function parseTagResponse(text: string): StickerTagResult | null {
 }
 
 /**
- * 对一张图片打标签。返回 null 表示无法标注（格式不支持、服务不可用、
- * 或模型回复无法解析），调用方应跳过该图而不是写坏索引。
+ * 主路径：走 DSH 路由的多模态模型打标签。
+ * 返回 null 表示本次标注失败（格式不支持、模型不可用、或回复无法解析），
+ * 调用方应跳过该图而不是写坏索引。
  */
-export async function tagImage(absPath: string, timeoutMs = 120000): Promise<StickerTagResult | null> {
-  const mime = MIME[extname(absPath).toLowerCase()]
-  if (mime === undefined) return null
+export async function tagImageViaLlm(
+  ctx: Context,
+  absPath: string,
+  route: TagRoute,
+  timeoutMs = 120000,
+): Promise<StickerTagResult | null> {
+  const mediaType = MIME_BY_EXT[extname(absPath).toLowerCase()]
+  if (mediaType === undefined) return null
+
+  let data: Uint8Array
+  try {
+    data = readFileSync(absPath)
+  } catch {
+    return null
+  }
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    // 图片必须先落进 attachment store，消息里引用的是它的 ref 而不是裸字节。
+    // 用单数 `saveImage`：它在 0.1.0-rc.6 与 0.2.0-rc.2 两代 AttachmentStore 上都存在，
+    // 而复数 `saveImages` 只在 0.2 起才有（0.1.x 的旧实例被 dsh-client-runtime 拖在树里）。
+    const ref = await ctx.attachments.saveImage({ data, mediaType, name: basename(absPath) })
+
+    const messages = [{
+      role: 'user',
+      content: [
+        { type: 'text', text: buildTagPrompt() },
+        { type: 'image', attachment: ref },
+      ],
+    }] as unknown as RequestMessage[]
+
+    const options = {
+      provider: route.provider,
+      model: route.model,
+      messages,
+      maxTokens: 400,
+      signal: controller.signal,
+    } as GenerateOptions
+
+    const assembler = new BlockAssembler()
+    for await (const chunk of ctx.llm.stream(options)) assembler.push(chunk)
+
+    const text = assembler.blocks()
+      .map(block => (block.type === 'text' ? block.text : ''))
+      .join('')
+    return parseTagResponse(text)
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * 兜底路径：本机 Ollama（离线免费，不需要 API key，但会占 6-7GB 显存）
+ * ------------------------------------------------------------------ */
+
+function ollamaBase(): string {
+  const explicit = process.env.OLLAMA_BASE_URL?.trim()
+  if (explicit !== undefined && explicit !== '') return explicit.replace(/\/+$/, '')
+  const port = process.env.OLLAMA_PORT?.trim() || '11434'
+  return `http://127.0.0.1:${port}`
+}
+
+function visionModel(): string {
+  const model = process.env.OLLAMA_VISION_MODEL?.trim()
+  return model !== undefined && model !== '' ? model : 'qwen3-vl-vision:latest'
+}
+
+/** 兜底：用本机 Ollama 的视觉模型打标签。 */
+export async function tagImageViaOllama(absPath: string, timeoutMs = 120000): Promise<StickerTagResult | null> {
+  const mediaType = MIME_BY_EXT[extname(absPath).toLowerCase()]
+  if (mediaType === undefined) return null
 
   let base64: string
   try {
@@ -115,7 +192,7 @@ export async function tagImage(absPath: string, timeoutMs = 120000): Promise<Sti
           role: 'user',
           content: [
             { type: 'text', text: buildTagPrompt() },
-            { type: 'image_url', image_url: { url: `data:${mime};base64,${base64}` } },
+            { type: 'image_url', image_url: { url: `data:${mediaType};base64,${base64}` } },
           ],
         }],
         max_tokens: 400,
@@ -123,8 +200,8 @@ export async function tagImage(absPath: string, timeoutMs = 120000): Promise<Sti
       }),
     })
     if (!response.ok) return null
-    const data = await response.json() as { choices?: { message?: { content?: string } }[] }
-    const content = data.choices?.[0]?.message?.content
+    const payload = await response.json() as { choices?: { message?: { content?: string } }[] }
+    const content = payload.choices?.[0]?.message?.content
     if (typeof content !== 'string' || content.trim() === '') return null
     return parseTagResponse(content)
   } catch {

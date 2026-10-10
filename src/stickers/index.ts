@@ -3,8 +3,11 @@
  *
  * 与旧的独立 stickers 插件的根本区别：
  *  - **不含任何图片素材**：素材由用户放进 `stickers/` 目录，素材权利归用户；
- *  - **不打包硬编码 catalog**：文件名 = 内容 sha256，元数据由视觉模型异步标注；
+ *  - **不打包硬编码 catalog**：文件名 = 内容 sha256，元数据由多模态模型异步标注；
  *  - **不引入向量库**：检索靠「情感标签过滤 + 把候选交给 LLM 自己挑」。
+ *
+ * 打标签优先走 **DSH 路由的多模态模型**（与对话同款，如 deepseek-flash），
+ * 失败时才兜底本机 Ollama。
  *
  * 对外提供：
  *  - 工具 `search_stickers`：按标签/描述检索候选列表
@@ -20,7 +23,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { existsSync, readFileSync } from 'node:fs'
 import { extname } from 'node:path'
 import { stopVisionModel } from '../see-image.ts'
-import { EMOTION_TAGS, tagImage } from './tagging.ts'
+import { EMOTION_TAGS, tagImageViaLlm, tagImageViaOllama, type TagRoute } from './tagging.ts'
 import {
   findSticker, loadIndex, reconcile, saveIndex, shortId, stickerPath,
   type StickerEntry, type StickerIndex,
@@ -32,7 +35,7 @@ export const STICKER_ROUTE_PREFIX = '/api/dsh-whale-companion/stickers'
 export const PAGE_SIZE = 6
 /** 进程内记住的最近发送 id 数，用于避免短时间内重复发同一张。 */
 export const RECENT_LIMIT = 6
-/** 启动后延迟多久开始后台打标签（等 Harness 与 Ollama 就绪，不阻塞加载）。 */
+/** 启动后延迟多久开始后台打标签（等 Harness 就绪，不阻塞加载）。 */
 export const STARTUP_SYNC_DELAY_MS = 8000
 
 const MIME_BY_EXT: Record<string, string> = {
@@ -60,21 +63,44 @@ export interface StickerSyncResult {
   skipped: number
   /** 扫描到的待处理图片数。 */
   scanned: number
+  /** 是否用到了 Ollama 兜底（用到才需要卸载模型）。 */
+  usedFallback: boolean
+}
+
+export interface StickerSyncOptions {
+  log?: (message: string) => void
+  /** 打标签的模型路由；不给则只用兜底路径。 */
+  route?: TagRoute
 }
 
 /**
  * 扫描素材目录：剔除已被用户删除的条目，为新增图片打标签入库。
  * 逐条落盘，中途失败也不会写坏索引。
  */
-export async function syncStickers(log?: (message: string) => void): Promise<StickerSyncResult> {
+export async function syncStickers(
+  ctx: Context,
+  options: StickerSyncOptions = {},
+): Promise<StickerSyncResult> {
+  const { log, route } = options
   const { index, pending } = reconcile()
   await saveIndex(index)
 
   let added = 0
   let skipped = 0
+  let usedFallback = false
+
   try {
     for (const item of pending) {
-      const result = await tagImage(stickerPath(item.file))
+      const abs = stickerPath(item.file)
+
+      // 主路径：DSH 路由的多模态模型（与对话同款，不占本机显存）
+      let result = route === undefined ? null : await tagImageViaLlm(ctx, abs, route)
+      // 兜底：本机 Ollama（离线免费，但会占 6-7GB 显存）
+      if (result === null) {
+        usedFallback = true
+        result = await tagImageViaOllama(abs)
+      }
+
       if (result === null || !result.keep) {
         skipped += 1
         continue
@@ -90,11 +116,12 @@ export async function syncStickers(log?: (message: string) => void): Promise<Sti
       added += 1
       log?.(`表情包入库：${item.file} → ${result.description}`)
     }
-    return { indexed: index.entries.length, added, skipped, scanned: pending.length }
+
+    return { indexed: index.entries.length, added, skipped, scanned: pending.length, usedFallback }
   } finally {
-    // 打标签会让视觉模型常驻 GPU（约 6-7GB）；同步一结束就释放，
-    // 免得它一直占着显存影响其他 GPU 用途。
-    if (pending.length > 0) {
+    // 只有真的退到 Ollama 时才需要卸载：它常驻会占 6-7GB 显存，
+    // 而主人常在同机打游戏。走 DSH 路由不加载任何本机模型。
+    if (usedFallback) {
       await stopVisionModel().catch(() => undefined)
     }
   }
@@ -109,12 +136,10 @@ function normalizeTags(input: unknown): string[] {
     .filter(t => allowed.has(t))
 }
 
-/** 候选排序：先按「最近没发过的」优先，保持其余原顺序。 */
+/** 候选排序：最近没发过的优先，保持其余原顺序。 */
 function rankCandidates(entries: StickerEntry[]): StickerEntry[] {
   const recent = new Set(recentlySent)
-  const fresh = entries.filter(e => !recent.has(e.id))
-  const used = entries.filter(e => recent.has(e.id))
-  return [...fresh, ...used]
+  return [...entries.filter(e => !recent.has(e.id)), ...entries.filter(e => recent.has(e.id))]
 }
 
 /** 按标签 + 描述做粗筛；两处都没命中时返回空（调用方可放宽条件重试）。 */
@@ -137,9 +162,10 @@ export function filterCandidates(index: StickerIndex, tags: string[], descriptio
 /** 注册表情包模块的全部对外能力。 */
 export function registerStickers(
   ctx: Context,
-  options: { log?: (message: string) => void } = {},
+  options: StickerSyncOptions = {},
 ): void {
   const log = options.log
+  const route = options.route
 
   // ---- 工具：检索候选 ----
   ctx.effect(() => ctx.tools.register(defineTool({
@@ -259,7 +285,7 @@ export function registerStickers(
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'sync_stickers',
     description:
-      '扫描表情包素材目录：剔除已删除的、为新增图片异步打标签入库。'
+      '扫描表情包素材目录：剔除已删除的、为新增图片打标签入库。'
       + '用户刚往素材目录放了新图时调用它。',
     parameters: {},
     output: {
@@ -278,7 +304,7 @@ export function registerStickers(
     },
     presentCall: () => ({ card: 'generic', title: '同步表情包' }),
     execute: async () => {
-      const result = await syncStickers(log)
+      const result = await syncStickers(ctx, { log, route })
       const text = result.scanned === 0
         ? `没有发现新图片；库里现有 ${result.indexed} 张。`
         : `扫描 ${result.scanned} 张：新增 ${result.added} 张，跳过 ${result.skipped} 张；库里现有 ${result.indexed} 张。`
@@ -322,7 +348,7 @@ export function registerStickers(
   // ---- 启动后异步打标签（不阻塞插件加载）----
   ctx.effect(() => {
     const timer = setTimeout(() => {
-      void syncStickers(log).catch((error: unknown) => {
+      void syncStickers(ctx, { log, route }).catch((error: unknown) => {
         log?.(`表情包同步失败：${error instanceof Error ? error.message : String(error)}`)
       })
     }, STARTUP_SYNC_DELAY_MS)

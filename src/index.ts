@@ -54,6 +54,10 @@ export interface Config {
   enabled?: boolean
   /** Exact additive role-play guidance. */
   persona?: string
+  /** 表情包打标签用的 provider（默认 deepseek-official）。 */
+  stickerTaggingProvider?: string
+  /** 表情包打标签用的 model（默认 deepseek-flash；需支持 image 输入）。 */
+  stickerTaggingModel?: string
 }
 
 interface PersonaAssemblyScope {
@@ -82,6 +86,8 @@ function identityFromExec(exec: { agent?: { session?: { id?: string } } } | unde
 export const Config: z<Config> = z.object({
   enabled: z.boolean().default(true),
   persona: z.string().default(DEFAULT_PERSONA),
+  stickerTaggingProvider: z.string().default('deepseek-official'),
+  stickerTaggingModel: z.string().default('deepseek-flash'),
 })
 
 /** One-line continued-session reminder about the master profile (token-saving). */
@@ -681,8 +687,14 @@ export function apply(ctx: Context, config: Config = {}): void {
     }), 'whale-companion: persona configuration route')
   })
 
-  // ---- 表情包模块：用户自备素材 + 视觉模型标注 + 标签检索 ----
-  registerStickers(ctx)
+  // ---- 表情包模块：用户自备素材 + 多模态模型标注 + 标签检索 ----
+  registerStickers(ctx, {
+    log: (message: string) => console.log(`whale-companion: ${message}`),
+    route: {
+      provider: config.stickerTaggingProvider ?? 'deepseek-official',
+      model: config.stickerTaggingModel ?? 'deepseek-flash',
+    },
+  })
 }
 
 async function readJsonBody(request: AsyncIterable<Uint8Array>, maxBytes: number): Promise<unknown> {
