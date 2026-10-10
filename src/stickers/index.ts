@@ -19,6 +19,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { existsSync, readFileSync } from 'node:fs'
 import { extname } from 'node:path'
+import { stopVisionModel } from '../see-image.ts'
 import { EMOTION_TAGS, tagImage } from './tagging.ts'
 import {
   findSticker, loadIndex, reconcile, saveIndex, shortId, stickerPath,
@@ -71,25 +72,32 @@ export async function syncStickers(log?: (message: string) => void): Promise<Sti
 
   let added = 0
   let skipped = 0
-  for (const item of pending) {
-    const result = await tagImage(stickerPath(item.file))
-    if (result === null || !result.keep) {
-      skipped += 1
-      continue
+  try {
+    for (const item of pending) {
+      const result = await tagImage(stickerPath(item.file))
+      if (result === null || !result.keep) {
+        skipped += 1
+        continue
+      }
+      index.entries.push({
+        id: shortId(item.hash),
+        file: item.file,
+        description: result.description,
+        tags: result.tags,
+        addedAt: new Date().toISOString(),
+      })
+      await saveIndex(index)
+      added += 1
+      log?.(`表情包入库：${item.file} → ${result.description}`)
     }
-    index.entries.push({
-      id: shortId(item.hash),
-      file: item.file,
-      description: result.description,
-      tags: result.tags,
-      addedAt: new Date().toISOString(),
-    })
-    await saveIndex(index)
-    added += 1
-    log?.(`表情包入库：${item.file} → ${result.description}`)
+    return { indexed: index.entries.length, added, skipped, scanned: pending.length }
+  } finally {
+    // 打标签会让视觉模型常驻 GPU（约 6-7GB）；同步一结束就释放，
+    // 免得它一直占着显存影响其他 GPU 用途。
+    if (pending.length > 0) {
+      await stopVisionModel().catch(() => undefined)
+    }
   }
-
-  return { indexed: index.entries.length, added, skipped, scanned: pending.length }
 }
 
 /** 把工具参数里的标签收敛成有效值（大小写/空白容错）。 */
